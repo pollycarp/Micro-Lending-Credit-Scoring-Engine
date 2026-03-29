@@ -4,12 +4,9 @@ and save the rows to PostgreSQL.
 
 Schema: transactions(id, merchant_id, date, revenue, expenses, net_cash_flow)
 
-Design choices that make the data realistic:
-- Revenue scales with loan_amount (proxy for business size).
-- Seasonal + weekly patterns per business type.
-- Merchants who default show a gradual revenue decline in the final 40 % of
-  the period — this is the signal the model will learn.
-- Expense ratios are higher for defaulters (cash-flow squeeze).
+Revenue trends are driven by the merchant's latent creditworthiness (_credit_latent),
+NOT by the default label directly.  This avoids leakage while still producing
+meaningful patterns the model can learn from.
 """
 
 from datetime import date, timedelta
@@ -25,7 +22,7 @@ load_dotenv()
 
 PG = dict(
     host     = os.getenv("POSTGRES_HOST", "localhost"),
-    port     = int(os.getenv("POSTGRES_PORT", 5432)),
+    port     = int(os.getenv("POSTGRES_PORT", 5433)),
     dbname   = os.getenv("POSTGRES_DB",   "lending_db"),
     user     = os.getenv("POSTGRES_USER",  "lending_user"),
     password = os.getenv("POSTGRES_PASSWORD", "lending_pass"),
@@ -35,10 +32,8 @@ MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 MONGO_DB  = os.getenv("MONGO_DB",  "lending_db")
 
 START_DATE = date(2022, 1, 1)
-END_DATE   = date(2023, 12, 31)   # 730 days
+END_DATE   = date(2023, 12, 31)
 
-
-# ── helpers ────────────────────────────────────────────────────────────────────
 
 def _dates() -> list[date]:
     n = (END_DATE - START_DATE).days + 1
@@ -57,36 +52,50 @@ def _revenue(merchant: dict, dates: list[date], rng: np.random.RandomState) -> n
     dow    = np.array([d.weekday() for d in dates])
     is_wknd = dow >= 5
     if merchant["business_type"] in ("retail", "food_beverage"):
-        weekly = np.where(is_wknd, 1.30, 1.0)
+        weekly = np.where(is_wknd, 1.25, 1.0)
     else:
-        weekly = np.where(is_wknd, 0.60, 1.0)
+        weekly = np.where(is_wknd, 0.65, 1.0)
 
-    # Long-run trend
-    if merchant["default"] == 1:
-        decline_start        = int(n * 0.60)
-        trend                = np.ones(n)
-        trend[decline_start:] = np.linspace(1.0, 0.55, n - decline_start)
-    else:
-        trend = np.linspace(1.0, 1.15, n)
+    # Trend driven by latent creditworthiness z (NOT by default label)
+    # z > 0.5  → healthy growth
+    # z ≈ 0    → flat
+    # z < -0.5 → mild late-period decline
+    # z < -1.5 → steeper decline
+    z = merchant.get("_credit_latent", 0.0)
+    trend = np.ones(n)
+    if z > 0.5:
+        # Growth: scales with creditworthiness
+        end_mult = 1.0 + min(0.18, 0.07 * z)
+        trend = np.linspace(1.0, end_mult, n)
+    elif z < -1.5:
+        # Steeper decline in final quarter
+        flat_end = int(n * 0.72)
+        trend[flat_end:] = np.linspace(1.0, 0.82, n - flat_end)
+    elif z < -0.5:
+        # Mild decline
+        flat_end = int(n * 0.80)
+        trend[flat_end:] = np.linspace(1.0, 0.93, n - flat_end)
+    # else: flat trend (z between -0.5 and 0.5)
 
-    noise   = rng.lognormal(0, 0.20, n)
+    # High noise buries the signal (std=0.38 is deliberately large)
+    noise   = rng.lognormal(0, 0.38, n)
     revenue = base * seasonality * weekly * trend * noise
     return np.maximum(revenue, 0.0).round(2)
 
 
 def _expenses(revenue: np.ndarray, merchant: dict, rng: np.random.RandomState) -> np.ndarray:
     n = len(revenue)
-    if merchant["default"] == 1:
-        ratio = rng.uniform(0.75, 0.98, n)
-    else:
-        ratio = rng.uniform(0.55, 0.80, n)
+    # Expense ratio correlated with z: less creditworthy → higher ratio
+    # Distributions overlap substantially
+    z = merchant.get("_credit_latent", 0.0)
+    mean_ratio = np.clip(0.73 - 0.07 * z, 0.55, 0.92)
+    ratio = rng.normal(mean_ratio, 0.10, n)
+    ratio = np.clip(ratio, 0.40, 1.05)
 
     fixed    = merchant["loan_amount"] * 0.0008
     expenses = revenue * ratio + fixed
     return np.maximum(expenses, 0.0).round(2)
 
-
-# ── PostgreSQL setup ───────────────────────────────────────────────────────────
 
 def create_table(conn: psycopg2.extensions.connection) -> None:
     with conn.cursor() as cur:
@@ -118,15 +127,14 @@ def insert_batch(conn, rows: list[tuple]) -> None:
     conn.commit()
 
 
-# ── entry point ────────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
-    # Load merchant list from MongoDB (only need id, type, default, loan_amount)
     print("Fetching merchants from MongoDB …")
-    mc       = MongoClient(MONGO_URI)
+    mc = MongoClient(MONGO_URI)
     merchants = list(
         mc[MONGO_DB]["merchants"].find(
-            {}, {"merchant_id": 1, "business_type": 1, "default": 1, "loan_amount": 1, "_id": 0}
+            {},
+            {"merchant_id": 1, "business_type": 1, "_credit_latent": 1,
+             "loan_amount": 1, "_id": 0}
         )
     )
     mc.close()
@@ -142,11 +150,10 @@ if __name__ == "__main__":
     np.random.seed(42)
 
     for idx, merchant in enumerate(merchants):
-        # Per-merchant RNG so ordering doesn't affect other merchants
-        rng      = np.random.RandomState(idx)
-        rev      = _revenue(merchant, dates, rng)
-        exp      = _expenses(rev, merchant, rng)
-        net      = (rev - exp).round(2)
+        rng = np.random.RandomState(idx)
+        rev = _revenue(merchant, dates, rng)
+        exp = _expenses(rev, merchant, rng)
+        net = (rev - exp).round(2)
 
         rows = [
             (merchant["merchant_id"], dates[j], float(rev[j]), float(exp[j]), float(net[j]))
