@@ -91,20 +91,19 @@ def _models() -> dict:
         ]),
 
         "XGBoost": XGBClassifier(
-            n_estimators=300,
+            n_estimators=200,
             max_depth=4,
             learning_rate=0.05,
             subsample=0.8,
             colsample_bytree=0.8,
             scale_pos_weight=(679 / 321),   # handles class imbalance
-            use_label_encoder=False,
             eval_metric="logloss",
             random_state=SEED,
             verbosity=0,
         ),
 
         "LightGBM": LGBMClassifier(
-            n_estimators=300,
+            n_estimators=200,
             max_depth=4,
             learning_rate=0.05,
             subsample=0.8,
@@ -112,6 +111,7 @@ def _models() -> dict:
             class_weight="balanced",
             random_state=SEED,
             verbose=-1,
+            n_jobs=1,   # avoid Windows multiprocessing issues
         ),
     }
 
@@ -137,7 +137,7 @@ def cross_validate_models(
     for name, model in models.items():
         scores = cross_val_score(
             model, X_train, y_train,
-            cv=cv, scoring="roc_auc", n_jobs=-1,
+            cv=cv, scoring="roc_auc", n_jobs=1,  # n_jobs=-1 can deadlock on Windows
         )
         results[name] = {
             "cv_auc_mean": scores.mean(),
