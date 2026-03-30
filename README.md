@@ -48,23 +48,23 @@ Key capabilities:
                           │
 ┌─────────────────────────▼───────────────────────────────────┐
 │                    Feature Store                            │
-│   transaction_features.py   merchant_features.py           │
+│   transaction_features.py   merchant_features.py            │
 │              └──────────┬───────────────┘                   │
 │                 feature_store.py  (build_feature_matrix)    │
 └─────────────────────────┼───────────────────────────────────┘
                           │
 ┌─────────────────────────▼───────────────────────────────────┐
 │                  Training Pipeline                          │
-│   XGBoost  │  LightGBM  │  Logistic Regression             │
+│   XGBoost  │  LightGBM  │  Logistic Regression              │
 │            └──── MLflow tracking & model registry ────┘     │
 └─────────────────────────┼───────────────────────────────────┘
                           │
           ┌───────────────┴───────────────┐
           │                               │
 ┌─────────▼──────────┐         ┌──────────▼──────────┐
-│   FastAPI          │         │  Streamlit Dashboard │
-│   /predict/{id}    │         │  Score · Portfolio   │
-│   /health          │         │  Model Performance   │
+│   FastAPI          │         │  Streamlit Dashboard│
+│   /predict/{id}    │         │  Score · Portfolio  │
+│   /health          │         │  Model Performance  │
 │   /model/info      │         └─────────────────────┘
 └────────────────────┘
 ```
