@@ -27,6 +27,16 @@ Target (passed through, not transformed):
 
 import pandas as pd
 
+# All possible category values — must be declared explicitly so that
+# pd.get_dummies always produces the same columns even when predicting
+# for a single merchant (who only has one value per category).
+ALL_BUSINESS_TYPES = ["agriculture", "food_beverage", "manufacturing",
+                      "retail", "services", "transport"]
+ALL_LOAN_PURPOSES  = ["equipment", "expansion", "inventory",
+                      "marketing", "payroll", "working_capital"]
+ALL_LOCATIONS      = ["Accra", "Addis Ababa", "Dar es Salaam", "Kampala",
+                      "Kigali", "Lagos", "Mombasa", "Nairobi"]
+
 RISK_BAND_ORDER = {
     "poor":        1,
     "fair":        2,
@@ -56,9 +66,17 @@ def build_merchant_features(merchants_df: pd.DataFrame) -> pd.DataFrame:
     df = df.set_index("merchant_id")
 
     # ── ordinal encode risk_band ───────────────────────────────────────────
-    df["risk_band_ord"] = df["risk_band"].map(RISK_BAND_ORDER).astype("Int64")
+    # Use float so missing values are np.nan (sklearn-compatible),
+    # not pd.NA (pandas nullable Int64 which sklearn cannot handle)
+    df["risk_band_ord"] = df["risk_band"].map(RISK_BAND_ORDER).astype(float)
 
     # ── one-hot encode categoricals ───────────────────────────────────────
+    # Use pd.Categorical with explicit category lists so that get_dummies
+    # always produces the same columns, even for a single-row input.
+    df["business_type"] = pd.Categorical(df["business_type"], categories=ALL_BUSINESS_TYPES)
+    df["loan_purpose"]  = pd.Categorical(df["loan_purpose"],  categories=ALL_LOAN_PURPOSES)
+    df["location"]      = pd.Categorical(df["location"],      categories=ALL_LOCATIONS)
+
     cat_cols = ["business_type", "loan_purpose", "location"]
     df = pd.get_dummies(df, columns=cat_cols, drop_first=True, dtype=int)
 

@@ -41,8 +41,10 @@ class OutlierClipper(BaseEstimator, TransformerMixin):
 
     def fit(self, X: pd.DataFrame, y=None):
         X = pd.DataFrame(X)
-        self.lower_bounds_ = np.percentile(X, self.lower_pct, axis=0)
-        self.upper_bounds_ = np.percentile(X, self.upper_pct, axis=0)
+        # nanpercentile ignores NaN — prevents NaN clip bounds when training
+        # data has missing values (e.g. revenue_growth_rate for new businesses)
+        self.lower_bounds_ = np.nanpercentile(X, self.lower_pct, axis=0)
+        self.upper_bounds_ = np.nanpercentile(X, self.upper_pct, axis=0)
         self.feature_names_in_ = list(X.columns)
         return self
 
@@ -69,13 +71,15 @@ class MedianImputer(BaseEstimator, TransformerMixin):
     """
 
     def fit(self, X: pd.DataFrame, y=None):
-        X = pd.DataFrame(X)
+        X = pd.DataFrame(X).astype(float)
         self.medians_             = X.median()
         self.feature_names_in_    = list(X.columns)
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        X = pd.DataFrame(X, columns=self.feature_names_in_).copy()
+        # astype(float) converts pd.NA (nullable Int64) to np.nan so that
+        # fillna works correctly and sklearn never sees pd.NA values
+        X = pd.DataFrame(X, columns=self.feature_names_in_).astype(float).copy()
         return X.fillna(self.medians_)
 
     def get_feature_names_out(self, input_features=None):

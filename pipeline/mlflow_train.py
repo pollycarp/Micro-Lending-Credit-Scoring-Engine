@@ -23,6 +23,7 @@ Then open the MLflow UI to explore all runs:
 import os
 from pathlib import Path
 
+import joblib
 import mlflow
 import mlflow.sklearn
 import pandas as pd
@@ -154,8 +155,16 @@ def run_experiment(
         version = reg.version,
     )
 
+    # Also save to local joblib so the Docker fallback path uses the full pipeline
+    saved_dir = Path(__file__).parent.parent / "models" / "saved"
+    saved_dir.mkdir(exist_ok=True)
+    joblib_path = saved_dir / "best_model.joblib"
+    best_pipeline = pipelines[best_name]   # already fitted above
+    joblib.dump({"name": best_name, "model": best_pipeline}, joblib_path)
+
     print(f"\n  Best model   : {best_name}  (AUC = {best_auc:.4f})")
     print(f"  Registered as: CreditScoringModel v{reg.version} @champion")
+    print(f"  Saved to     : {joblib_path}")
     print(f"\n  View all runs:  mlflow ui  →  http://localhost:5000")
 
     return best_name

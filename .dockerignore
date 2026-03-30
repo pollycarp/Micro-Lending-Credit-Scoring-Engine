@@ -1,0 +1,32 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Environment — never bake secrets into an image
+.env
+
+# Git
+.git/
+.gitignore
+
+# Notebooks (not needed at runtime)
+notebooks/
+*.ipynb
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# MLflow artifacts and saved models are mounted as volumes at runtime,
+# keeping them out of the image makes the build faster and the image smaller.
+mlruns/
+mlartifacts/

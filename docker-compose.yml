@@ -1,23 +1,42 @@
-version: "3.9"
+# ─────────────────────────────────────────────────────────────────────────────
+# Micro-Lending Credit Scoring Engine — full stack
+#
+# Services
+# --------
+#   postgres     PostgreSQL 16  (transaction history)        host port 5433
+#   mongodb      MongoDB 7.0    (merchant profiles)          host port 27017
+#   data_init    one-off job    populates both databases      exits when done
+#   bureau_api   Flask          mock credit bureau            host port 5001
+#   scoring_api  FastAPI        PD scoring endpoint           host port 8000
+#
+# Start everything:
+#   docker-compose up --build
+#
+# Prerequisites (run once on the host before docker-compose up):
+#   python -m pipeline.mlflow_train   ← trains & registers the model
+# ─────────────────────────────────────────────────────────────────────────────
 
 services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     container_name: lending_postgres
     environment:
-      POSTGRES_DB: lending_db
-      POSTGRES_USER: lending_user
+      POSTGRES_DB:       lending_db
+      POSTGRES_USER:     lending_user
       POSTGRES_PASSWORD: lending_pass
     ports:
-      - "5433:5432"
+      - "5433:5432"          # 5433 on host → 5432 inside Docker
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U lending_user -d lending_db"]
+      test:     ["CMD-SHELL", "pg_isready -U lending_user -d lending_db"]
       interval: 10s
-      timeout: 5s
-      retries: 5
+      timeout:  5s
+      retries:  5
 
+  # ── MongoDB ─────────────────────────────────────────────────────────────────
   mongodb:
     image: mongo:7.0
     container_name: lending_mongodb
@@ -28,11 +47,80 @@ services:
     volumes:
       - mongo_data:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test:     ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 10s
-      timeout: 5s
-      retries: 5
+      timeout:  5s
+      retries:  5
 
+  # ── Data initialisation (runs once, then exits) ─────────────────────────────
+  data_init:
+    build: .
+    container_name: lending_data_init
+    command: python data/run_all.py
+    environment:
+      MONGO_URI:         mongodb://mongodb:27017
+      MONGO_DB:          lending_db
+      POSTGRES_HOST:     postgres
+      POSTGRES_PORT:     5432          # internal Docker port (not 5433)
+      POSTGRES_DB:       lending_db
+      POSTGRES_USER:     lending_user
+      POSTGRES_PASSWORD: lending_pass
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    restart: "no"           # run once only
+
+  # ── Mock Credit Bureau API ──────────────────────────────────────────────────
+  bureau-api:
+    build: .
+    container_name: lending_bureau_api
+    command: python data/mock_bureau_api.py
+    environment:
+      MONGO_URI: mongodb://mongodb:27017
+      MONGO_DB:  lending_db
+    ports:
+      - "5001:5001"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      data_init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:     ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5001/health')\""]
+      interval: 10s
+      timeout:  5s
+      retries:  5
+
+  # ── FastAPI Scoring API ─────────────────────────────────────────────────────
+  scoring_api:
+    build: .
+    container_name: lending_scoring_api
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+    environment:
+      MONGO_URI:            mongodb://mongodb:27017
+      MONGO_DB:             lending_db
+      POSTGRES_HOST:        postgres
+      POSTGRES_PORT:        5432
+      POSTGRES_DB:          lending_db
+      POSTGRES_USER:        lending_user
+      POSTGRES_PASSWORD:    lending_pass
+      BUREAU_API_URL:       http://bureau-api:5001
+      MLFLOW_TRACKING_URI:  /app/mlruns
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount pre-trained model artifacts from the host (read-only)
+      - ./mlruns:/app/mlruns:ro
+      - ./models/saved:/app/models/saved:ro
+    depends_on:
+      data_init:
+        condition: service_completed_successfully
+      bureau-api:
+        condition: service_healthy
+
+# ── Named volumes ──────────────────────────────────────────────────────────────
 volumes:
   postgres_data:
   mongo_data:
